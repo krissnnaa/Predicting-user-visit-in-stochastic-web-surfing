@@ -1,10 +1,11 @@
 import numpy as np
 from sklearn.cluster import KMeans
 import seaborn as sns; sns.set()
-import operator
 from collections import Counter
 from sklearn.metrics.pairwise import cosine_similarity
 from yellowbrick.cluster import KElbowVisualizer
+from sklearn.cluster import MeanShift, estimate_bandwidth
+from scipy.sparse.linalg import svds
 
 def dataPreprocessing(filename):
     """
@@ -57,14 +58,31 @@ def dataPreprocessing(filename):
 
 
 
+def svdPrediction(X_test, testUser,topN):
+    U, sigma, Vt = svds(X_test, k=50)
+    sigma = np.diag(sigma)
+    user_pred = np.dot(np.dot(U, sigma), Vt)
+    indx = np.argsort(user_pred, axis=1)
 
-def userBasedNeighboring(X_train,userInteract,X_test, testUser):
+    truePredict = 0
+    for i in range(10001,15001):
+        for web in indx[i-10001][len(X_test[0])-int(topN):]:
+            if int (web)==(int(testUser[i]-1000)):
+                truePredict+=1
+
+    testAccuracy = truePredict / 5000
+
+    print('Test accuracy using user-based neighboring method=')
+    print(testAccuracy)
+
+
+def userBasedNeighboring(X_train,userInteract,X_test, testUser,topN):
     #Training
     cosine=cosine_similarity(X_train)
     indx=np.argsort(cosine,axis=1)
     similarTen={}
     for user,simUser in zip(userInteract.keys(),indx):
-        similarTen[user]=list(simUser[len(X_train)-10:])
+        similarTen[user]=list(simUser[len(X_train)-int(topN)+1:len(X_train)-1])
     predictedWeb={}
     for simUs,simVal in similarTen.items():
         temp=[]
@@ -76,9 +94,9 @@ def userBasedNeighboring(X_train,userInteract,X_test, testUser):
         count=dict(Counter(flat_list))
         clusteList = sorted(count.items(), key=lambda kv: kv[1])
         finalList = []
-        for web, count in clusteList[len(clusteList) - 10:]:
+        for web, count in clusteList[len(clusteList) - int(topN):]:
             finalList.append(web)
-        predictedWeb[simUs]= finalList #max(count.items(), key=operator.itemgetter(1))[0]
+        predictedWeb[simUs]= finalList
 
     #Testing
     testCosine=cosine_similarity(X_test,X_train)
@@ -97,8 +115,82 @@ def userBasedNeighboring(X_train,userInteract,X_test, testUser):
     print('Test accuracy using user-based neighboring method=')
     print(testAccuracy)
 
+def itemBasedNeighboring(X_train,userInteract,X_test, testUser,topN):
+    #Training
+    cosine=cosine_similarity(X_train.transpose())
+    indx=np.argsort(cosine,axis=1)
+    similarTen={}
+    for user,simUser in zip(userInteract.keys(),indx):
+        similarTen[user]=list(simUser[len(X_train)-int(topN)+1:len(X_train)-1])
+    predictedWeb={}
+    for simUs,simVal in similarTen.items():
+        temp=[]
+        for item in simVal:
+            item=(10001+int(item))
+            temp.append(userInteract[item])
+        flat_list = [item for sublist in temp for item in sublist]
 
-def kmeanClustering(X_train,userInteract,X_test, testUser):
+        count=dict(Counter(flat_list))
+        clusteList = sorted(count.items(), key=lambda kv: kv[1])
+        finalList = []
+        for web, count in clusteList[len(clusteList) - int(topN):]:
+            finalList.append(web)
+        predictedWeb[simUs]= finalList
+
+    #Testing
+    testCosine=cosine_similarity(X_test,X_train)
+    indx = np.argsort(testCosine, axis=1)
+    finalIndex=indx[:,-1:]
+    truePredict=0
+    i=10001
+    for ind in finalIndex:
+        for web in predictedWeb[int(ind)+10001]:
+            if int (web)==int(testUser[i]):
+                truePredict+=1
+        i+=1
+
+    testAccuracy = truePredict / 5000
+
+    print('Test accuracy using user-based neighboring method=')
+    print(testAccuracy)
+
+def meanShiftClustering(X_train,userInteract,X_test, testUser,topN):
+    """
+    K-mean implementation
+    :return:
+    """
+    #Training
+    bandwidth = estimate_bandwidth(X_train, quantile=0.2, n_samples=500)
+    ms = MeanShift(bandwidth=bandwidth, bin_seeding=True).fit(X_train[:5000])
+    msLabels = ms.labels_
+    cluster_centers = ms.cluster_centers_
+    predictDict={}
+    indexOfclass = np.asarray(np.where(msLabels == 0))
+    predictDict[0] = predictWebsites(userInteract,indexOfclass+10001,topN)
+    indexOfclass = np.asarray(np.where(msLabels == 1))
+    predictDict[1] = predictWebsites(userInteract, indexOfclass+10001,topN)
+    indexOfclass = np.asarray(np.where(msLabels == 2))
+    predictDict[2] = predictWebsites(userInteract, indexOfclass+10001,topN)
+
+
+    # Testing
+    testCosine = cosine_similarity(X_test, cluster_centers)
+    indx = np.argsort(testCosine, axis=1)
+    finalIndex = indx[:, -1:]
+    truPredict=0
+
+    for clustNum,target in zip(finalIndex,testUser.values()):
+        for web in predictDict[int(clustNum)]:
+                if int(web)==int(target):
+                    truPredict+=1
+
+    testAccuracy=truPredict/5000
+
+    print('Test accuracy=')
+    print(testAccuracy)
+
+
+def kmeanClustering(X_train,userInteract,X_test, testUser,topN):
     """
     K-mean implementation
     :return:
@@ -108,19 +200,19 @@ def kmeanClustering(X_train,userInteract,X_test, testUser):
     kmeanLabels = kmeans.labels_
     predictDict={}
     indexOfclass = np.asarray(np.where(kmeanLabels == 0))
-    predictDict[0] = predictWebsites(userInteract,indexOfclass+10001)
+    predictDict[0] = predictWebsites(userInteract,indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 1))
-    predictDict[1] = predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[1] = predictWebsites(userInteract, indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 2))
-    predictDict[2] = predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[2] = predictWebsites(userInteract, indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 3))
-    predictDict[3] = predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[3] = predictWebsites(userInteract, indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 4))
-    predictDict[4] = predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[4] = predictWebsites(userInteract, indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 5))
-    predictDict[5] = predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[5] = predictWebsites(userInteract, indexOfclass+10001,topN)
     indexOfclass = np.asarray(np.where(kmeanLabels == 6))
-    predictDict[6]= predictWebsites(userInteract, indexOfclass+10001)
+    predictDict[6]= predictWebsites(userInteract, indexOfclass+10001,topN)
     centroids=kmeans.cluster_centers_
 
     # Testing
@@ -139,7 +231,6 @@ def kmeanClustering(X_train,userInteract,X_test, testUser):
     print('Test accuracy=')
     print(testAccuracy)
 
-
     elbowPlot(kmeans,X_train)
 
 
@@ -150,8 +241,7 @@ def elbowPlot(model,data):
 
 
 
-
-def predictWebsites(userInteraction,clusterWeb):
+def predictWebsites(userInteraction,clusterWeb,topN):
     """
     Prediction
     :return:
@@ -164,9 +254,8 @@ def predictWebsites(userInteraction,clusterWeb):
     count = dict(Counter(flat_list))
     clusteList=sorted(count.items(), key=lambda kv: kv[1])
     finalList=[]
-    for web,count in clusteList[len(clusteList)-3:]:
+    for web,count in clusteList[len(clusteList)-int(topN):]:
         finalList.append(web)
-    # singleMax=max(count.items(), key=operator.itemgetter(1))[0]
     return (finalList)
 
 
@@ -182,9 +271,20 @@ if __name__ == '__main__':
     testuserWeb,testLabel=dataPreprocessing('test.txt')
     testusers = np.array(list(testuserWeb.keys()))
     testuserValues = np.array(list(testuserWeb.values()))
+    print("Enter topN value=")
+    topN=input()
+
+    #Item-item based neighoring
+    itemBasedNeighboring(userValues,userInteraction,testuserValues,testLabel,topN)
+
+    #Mean shift clustering
+    meanShiftClustering(userValues, userInteraction, testuserValues, testLabel,topN)
+
+    #Matrix Factorization with SVD
+    svdPrediction(testuserValues, testLabel,topN)
 
     # User-based neighboring
-    userBasedNeighboring(userValues,userInteraction,testuserValues,testLabel)
+    userBasedNeighboring(userValues,userInteraction,testuserValues,testLabel,topN)
 
     # k-mean clustering
-    kmeanClustering(userValues,userInteraction,testuserValues,testLabel)
+    kmeanClustering(userValues,userInteraction,testuserValues,testLabel,topN)
